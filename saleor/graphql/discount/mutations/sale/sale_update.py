@@ -77,28 +77,15 @@ class SaleUpdate(ModelMutation):
             for rule in rules:
                 cls.clean_instance(info, rule)
                 rule.save()
-            current_predicate = rules[0].catalogue_predicate
-            current_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
-                current_predicate
-            )
-            manager = get_plugin_manager_promise(info.context).get()
-            cls.send_sale_notifications(
-                manager,
-                promotion,
-                input,
-                previous_catalogue,
-                current_catalogue,
-                previous_end_date,
-            )
 
-            products = get_products_for_rule(rules[0])
-            if (
-                product_ids := set(products.values_list("id", flat=True))
-                | previous_product_ids
-            ):
-                update_products_discounted_prices_for_promotion_task.delay(
-                    list(product_ids)
-                )
+            cls.post_save_actions(
+                info,
+                input,
+                promotion,
+                previous_catalogue,
+                previous_end_date,
+                previous_product_ids,
+            )
 
         return cls.success_response(ChannelContext(node=promotion, channel_slug=None))
 
@@ -140,6 +127,44 @@ class SaleUpdate(ModelMutation):
         variants = input.get("variants")
 
         return create_catalogue_predicate(collections, categories, products, variants)
+
+    @classmethod
+    def post_save_actions(
+        cls,
+        info,
+        input,
+        promotion,
+        previous_catalogue,
+        previous_end_date,
+        previous_product_ids,
+    ):
+        rule = promotion.rules.first()
+        current_predicate = rule.catalogue_predicate
+        current_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
+            current_predicate
+        )
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.send_sale_notifications(
+            manager,
+            promotion,
+            input,
+            previous_catalogue,
+            current_catalogue,
+            previous_end_date,
+        )
+
+        if any(
+            field in input.keys()
+            for field in [*CATALOGUE_FIELDS, "start_date", "end_date", "type", "value"]
+        ):
+            products = get_products_for_rule(rule)
+            if (
+                product_ids := set(products.values_list("id", flat=True))
+                | previous_product_ids
+            ):
+                update_products_discounted_prices_for_promotion_task.delay(
+                    list(product_ids)
+                )
 
     @classmethod
     def send_sale_notifications(

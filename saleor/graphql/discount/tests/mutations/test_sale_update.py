@@ -96,15 +96,13 @@ def test_update_sale(
     update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
 
 
-# TODO will be fixed in PR refactoring the mutation
-@pytest.mark.skip
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_name(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -117,7 +115,7 @@ def test_update_sale_name(
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
-
+    convert_sales_to_promotions()
     variables = {
         "id": graphene.Node.to_global_id("Sale", sale.id),
         "input": {
@@ -133,27 +131,30 @@ def test_update_sale_name(
 
     # then
     content = get_graphql_content(response)
+    assert not content["data"]["saleUpdate"]["errors"]
     data = content["data"]["saleUpdate"]["sale"]
     assert data["name"] == new_name
+    promotion = Promotion.objects.get(old_sale_id=sale.id)
+    assert promotion.name == new_name
 
     updated_webhook_mock.assert_called_once_with(
-        sale, previous_catalogue, current_catalogue
+        promotion, previous_catalogue, current_catalogue
     )
-    update_products_discounted_prices_of_catalogues_task_mock.assert_not_called()
+    update_products_discounted_prices_for_promotion_task_mock.assert_not_called()
 
 
 # TODO will be fixed in PR refactoring the mutation
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_start_date_after_current_date_notification_not_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -202,8 +203,8 @@ def test_update_sale_start_date_after_current_date_notification_not_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_not_called()
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -214,14 +215,14 @@ def test_update_sale_start_date_after_current_date_notification_not_sent(
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_start_date_before_current_date_notification_already_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -271,8 +272,8 @@ def test_update_sale_start_date_before_current_date_notification_already_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_not_called()
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -283,14 +284,14 @@ def test_update_sale_start_date_before_current_date_notification_already_sent(
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_start_date_before_current_date_notification_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -338,8 +339,8 @@ def test_update_sale_start_date_before_current_date_notification_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_called_once_with(sale, current_catalogue)
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -350,14 +351,14 @@ def test_update_sale_start_date_before_current_date_notification_sent(
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_end_date_after_current_date_notification_not_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -403,8 +404,8 @@ def test_update_sale_end_date_after_current_date_notification_not_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_not_called()
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -415,14 +416,14 @@ def test_update_sale_end_date_after_current_date_notification_not_sent(
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_end_date_before_current_date_notification_already_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -474,8 +475,8 @@ def test_update_sale_end_date_before_current_date_notification_already_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_called_once_with(sale, current_catalogue)
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -486,14 +487,14 @@ def test_update_sale_end_date_before_current_date_notification_already_sent(
 @pytest.mark.skip
 @freeze_time("2020-03-18 12:00:00")
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_end_date_before_current_date_notification_sent(
     updated_webhook_mock,
     sale_toggle_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -541,8 +542,8 @@ def test_update_sale_end_date_before_current_date_notification_sent(
         sale, previous_catalogue, current_catalogue
     )
     sale_toggle_mock.assert_called_once_with(sale, current_catalogue)
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     assert set(kwargs["category_ids"]) == category_pks
     assert set(kwargs["collection_ids"]) == collection_pks
     assert set(kwargs["product_ids"]) == product_pks
@@ -552,12 +553,12 @@ def test_update_sale_end_date_before_current_date_notification_sent(
 # TODO will be fixed in PR refactoring the mutation
 @pytest.mark.skip
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_categories(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -594,7 +595,7 @@ def test_update_sale_categories(
     updated_webhook_mock.assert_called_once_with(
         sale, previous_catalogue, current_catalogue
     )
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     category_pks.add(non_default_category.id)
     assert set(kwargs["category_ids"]) == category_pks
     assert kwargs["collection_ids"] == []
@@ -605,12 +606,12 @@ def test_update_sale_categories(
 # TODO will be fixed in PR refactoring the mutation
 @pytest.mark.skip
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_collections(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -647,7 +648,7 @@ def test_update_sale_collections(
     updated_webhook_mock.assert_called_once_with(
         sale, previous_catalogue, current_catalogue
     )
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     collection_pks.add(published_collection.id)
     assert kwargs["category_ids"] == []
     assert set(kwargs["collection_ids"]) == collection_pks
@@ -658,12 +659,12 @@ def test_update_sale_collections(
 # TODO will be fixed in PR refactoring the mutation
 @pytest.mark.skip
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_variants(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -702,7 +703,7 @@ def test_update_sale_variants(
     updated_webhook_mock.assert_called_once_with(
         sale, previous_catalogue, current_catalogue
     )
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     variant_pks.add(preorder_variant_global_threshold.id)
     assert kwargs["category_ids"] == []
     assert kwargs["collection_ids"] == []
@@ -713,12 +714,12 @@ def test_update_sale_variants(
 # TODO will be fixed in PR refactoring the mutation
 @pytest.mark.skip
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_products(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -753,7 +754,7 @@ def test_update_sale_products(
     updated_webhook_mock.assert_called_once_with(
         sale, previous_catalogue, current_catalogue
     )
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
+    args, kwargs = update_products_discounted_prices_for_promotion_task_mock.call_args
     product_pks.add(product_list[-1].id)
     assert kwargs["category_ids"] == []
     assert kwargs["collection_ids"] == []
