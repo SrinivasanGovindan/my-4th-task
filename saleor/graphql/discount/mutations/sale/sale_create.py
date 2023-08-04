@@ -30,6 +30,7 @@ from ...utils import convert_migrated_sale_predicate_to_catalogue_info
 class SaleInput(BaseInputObjectType):
     name = graphene.String(description="Voucher name.")
     type = DiscountValueTypeEnum(description="Fixed or percentage.")
+    # TODO what is value for???
     value = PositiveDecimal(description="Value of the voucher.")
     products = NonNullList(
         graphene.ID, description="Products related to the discount.", name="products"

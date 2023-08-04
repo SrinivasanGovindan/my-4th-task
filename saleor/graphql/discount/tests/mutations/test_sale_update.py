@@ -7,6 +7,8 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from .....discount import DiscountValueType
+from .....discount.models import Promotion, PromotionRule
+from .....discount.sale_converter import convert_sales_to_promotions
 from .....discount.utils import fetch_catalogue_info
 from ....tests.utils import get_graphql_content
 from ...enums import DiscountValueTypeEnum
@@ -31,8 +33,6 @@ SALE_UPDATE_MUTATION = """
 """
 
 
-# TODO will be fixed in PR refactoring the mutation
-@pytest.mark.skip
 @patch(
     "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
 )
@@ -51,6 +51,7 @@ def test_update_sale(
     # Set discount value type to 'fixed' and change it in mutation
     sale.type = DiscountValueType.FIXED
     sale.save(update_fields=["type"])
+
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
@@ -64,6 +65,9 @@ def test_update_sale(
         graphene.Node.to_global_id("Product", product_id)
         for product_id in new_product_pks
     ]
+
+    convert_sales_to_promotions()
+
     variables = {
         "id": graphene.Node.to_global_id("Sale", sale.id),
         "input": {
@@ -80,6 +84,7 @@ def test_update_sale(
 
     # then
     content = get_graphql_content(response)
+    assert not content["data"]["saleUpdate"]["errors"]
     data = content["data"]["saleUpdate"]["sale"]
     assert data["type"] == DiscountValueType.PERCENTAGE.upper()
 

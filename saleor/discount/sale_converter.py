@@ -126,7 +126,7 @@ def _create_promotion_rule(
     sale, promotion, discount_value=None, old_channel_listing_id=None
 ):
     return PromotionRule(
-        name="",
+        name=promotion.name,
         promotion=promotion,
         catalogue_predicate=_create_catalogue_predicate_from_sale(sale),
         reward_value_type=sale.type,

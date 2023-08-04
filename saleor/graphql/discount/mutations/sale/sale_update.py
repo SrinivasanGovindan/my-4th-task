@@ -1,11 +1,13 @@
 from collections import defaultdict
 from datetime import datetime
+from typing import List
 
 import graphene
 import pytz
 
 from .....core.tracing import traced_atomic_transaction
 from .....discount import models
+from .....discount.sale_converter import create_catalogue_predicate
 from .....discount.utils import CATALOGUE_FIELDS, fetch_catalogue_info
 from .....permission.enums import DiscountPermissions
 from .....product.tasks import update_products_discounted_prices_of_catalogues_task
@@ -13,11 +15,13 @@ from .....webhook.event_types import WebhookEventAsyncType
 from ....channel import ChannelContext
 from ....core import ResolveInfo
 from ....core.descriptions import DEPRECATED_IN_3X_MUTATION
+from ....core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ....core.mutations import ModelMutation
 from ....core.types import DiscountError
 from ....core.utils import WebhookEventInfo
 from ....plugins.dataloaders import get_plugin_manager_promise
 from ...types import Sale
+from ...utils import convert_migrated_sale_predicate_to_catalogue_info
 from ..utils import convert_catalogue_info_to_global_ids
 from .sale_create import SaleInput
 
@@ -35,11 +39,13 @@ class SaleUpdate(ModelMutation):
             + DEPRECATED_IN_3X_MUTATION
             + " Use `promotionUpdate` mutation instead."
         )
-        model = models.Sale
+        model = models.Promotion
         object_type = Sale
+        return_field_name = "sale"
         permissions = (DiscountPermissions.MANAGE_DISCOUNTS,)
         error_type_class = DiscountError
         error_type_field = "discount_errors"
+        doc_category = DOC_CATEGORY_DISCOUNTS
         webhook_events_info = [
             WebhookEventInfo(
                 type=WebhookEventAsyncType.SALE_UPDATED,
@@ -53,31 +59,76 @@ class SaleUpdate(ModelMutation):
 
     @classmethod
     def perform_mutation(cls, _root, info: ResolveInfo, /, **data):
-        instance = cls.get_instance(info, **data)
-        previous_catalogue = fetch_catalogue_info(instance)
-        previous_end_date = instance.end_date
-        data = data.get("input")
+        promotion = cls.get_instance(info, **data)
+        rules = promotion.rules.all()
+        predicate = rules[0].catalogue_predicate
+        previous_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
+            predicate
+        )
+        previous_end_date = promotion.end_date
         manager = get_plugin_manager_promise(info.context).get()
-        cleaned_input = cls.clean_input(info, instance, data)
         with traced_atomic_transaction():
-            instance = cls.construct_instance(instance, cleaned_input)
-            cls.clean_instance(info, instance)
-            cls.save(info, instance, cleaned_input)
-            cls._save_m2m(info, instance, cleaned_input)
-            current_catalogue = fetch_catalogue_info(instance)
-            cls.send_sale_notifications(
-                manager,
-                instance,
-                cleaned_input,
-                previous_catalogue,
-                current_catalogue,
-                previous_end_date,
-            )
+            input = data.get("input")
+            cls.update_fields(promotion, rules, input)
 
-            cls.update_products_discounted_prices(
-                cleaned_input, previous_catalogue, current_catalogue
-            )
-        return cls.success_response(ChannelContext(node=instance, channel_slug=None))
+            cls.clean_instance(info, promotion)
+            promotion.save()
+            for rule in rules:
+                cls.clean_instance(info, rule)
+                rule.save()
+            # current_catalogue = fetch_catalogue_info(instance)
+            # cls.send_sale_notifications(
+            #     manager,
+            #     instance,
+            #     cleaned_input,
+            #     previous_catalogue,
+            #     current_catalogue,
+            #     previous_end_date,
+            # )
+            #
+            # cls.update_products_discounted_prices(
+            #     cleaned_input, previous_catalogue, current_catalogue
+            # )
+        return cls.success_response(ChannelContext(node=promotion, channel_slug=None))
+
+    # TODO no date validation???
+    # TODO what is "value" in input for???
+    # TODO check where None can be passed
+
+    @classmethod
+    def get_instance(cls, info: ResolveInfo, **data):
+        object_id = cls.get_global_id_or_error(data["id"], "Sale")
+        return models.Promotion.objects.get(old_sale_id=object_id)
+
+    @classmethod
+    def update_fields(
+        cls, promotion: models.Promotion, rules: List[models.PromotionRule], input
+    ):
+        if name := input.get("name"):
+            promotion.name = name
+        if start_date := input.get("start_date"):
+            promotion.start_date = start_date
+        if end_date := input.get("end_date"):
+            promotion.end_date = end_date
+
+        # We need to make sure, that all rules have the same type and predicate
+        if type := input.get("type"):
+            for rule in rules:
+                rule.reward_value_type = type
+        fields = ["collections", "categories", "products", "variants"]
+        if any([key in fields for key in input.keys()]):
+            predicate = cls.create_predicate(input)
+            for rule in rules:
+                rule.catalogue_predicate = predicate
+
+    @staticmethod
+    def create_predicate(input):
+        collections = input.get("collections")
+        categories = input.get("categories")
+        products = input.get("products")
+        variants = input.get("variants")
+
+        return create_catalogue_predicate(collections, categories, products, variants)
 
     @classmethod
     def send_sale_notifications(
