@@ -7,12 +7,13 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from .....discount import DiscountValueType
-from .....discount.models import Promotion, PromotionRule
+from .....discount.models import Promotion
 from .....discount.sale_converter import convert_sales_to_promotions
 from .....discount.utils import fetch_catalogue_info
 from ....tests.utils import get_graphql_content
 from ...enums import DiscountValueTypeEnum
 from ...mutations.utils import convert_catalogue_info_to_global_ids
+from ...utils import convert_migrated_sale_predicate_to_catalogue_info
 
 SALE_UPDATE_MUTATION = """
     mutation  saleUpdate($id: ID!, $input: SaleInput!) {
@@ -34,12 +35,12 @@ SALE_UPDATE_MUTATION = """
 
 
 @patch(
-    "saleor.product.tasks.update_products_discounted_prices_of_catalogues_task.delay"
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale(
     updated_webhook_mock,
-    update_products_discounted_prices_of_catalogues_task_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
     permission_manage_discounts,
@@ -55,12 +56,7 @@ def test_update_sale(
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
-    category_pks = set(sale.categories.values_list("id", flat=True))
-    collection_pks = set(sale.collections.values_list("id", flat=True))
-    product_pks = set(sale.products.values_list("id", flat=True))
-    variant_pks = set(sale.variants.values_list("id", flat=True))
     new_product_pks = [product.id for product in product_list]
-
     new_product_ids = [
         graphene.Node.to_global_id("Product", product_id)
         for product_id in new_product_pks
@@ -80,7 +76,6 @@ def test_update_sale(
     response = staff_api_client.post_graphql(
         query, variables, permissions=[permission_manage_discounts]
     )
-    current_catalogue = convert_catalogue_info_to_global_ids(fetch_catalogue_info(sale))
 
     # then
     content = get_graphql_content(response)
@@ -88,15 +83,17 @@ def test_update_sale(
     data = content["data"]["saleUpdate"]["sale"]
     assert data["type"] == DiscountValueType.PERCENTAGE.upper()
 
-    updated_webhook_mock.assert_called_once_with(
-        sale, previous_catalogue, current_catalogue
+    promotion = Promotion.objects.get(old_sale_id=sale.id)
+    rule = promotion.rules.first()
+    assert rule.reward_value_type == DiscountValueType.PERCENTAGE
+
+    current_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
+        rule.catalogue_predicate
     )
-    update_products_discounted_prices_of_catalogues_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_prices_of_catalogues_task_mock.call_args
-    assert set(kwargs["category_ids"]) == category_pks
-    assert set(kwargs["collection_ids"]) == collection_pks
-    assert set(kwargs["product_ids"]) == product_pks.union(new_product_pks)
-    assert set(kwargs["variant_ids"]) == variant_pks
+    updated_webhook_mock.assert_called_once_with(
+        promotion, previous_catalogue, current_catalogue
+    )
+    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
 
 
 # TODO will be fixed in PR refactoring the mutation
@@ -762,3 +759,7 @@ def test_update_sale_products(
     assert kwargs["collection_ids"] == []
     assert set(kwargs["product_ids"]) == product_pks
     assert kwargs["variant_ids"] == []
+
+
+# TODO def test_update_sale_end_date_before_start_date
+# TODO def test_update_sale_with_none_values

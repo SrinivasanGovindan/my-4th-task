@@ -1,4 +1,3 @@
-from collections import defaultdict
 from datetime import datetime
 from typing import List
 
@@ -8,9 +7,9 @@ import pytz
 from .....core.tracing import traced_atomic_transaction
 from .....discount import models
 from .....discount.sale_converter import create_catalogue_predicate
-from .....discount.utils import CATALOGUE_FIELDS, fetch_catalogue_info
+from .....discount.utils import CATALOGUE_FIELDS
 from .....permission.enums import DiscountPermissions
-from .....product.tasks import update_products_discounted_prices_of_catalogues_task
+from .....product.tasks import update_products_discounted_prices_for_promotion_task
 from .....webhook.event_types import WebhookEventAsyncType
 from ....channel import ChannelContext
 from ....core import ResolveInfo
@@ -21,8 +20,10 @@ from ....core.types import DiscountError
 from ....core.utils import WebhookEventInfo
 from ....plugins.dataloaders import get_plugin_manager_promise
 from ...types import Sale
-from ...utils import convert_migrated_sale_predicate_to_catalogue_info
-from ..utils import convert_catalogue_info_to_global_ids
+from ...utils import (
+    convert_migrated_sale_predicate_to_catalogue_info,
+    get_products_for_rule,
+)
 from .sale_create import SaleInput
 
 
@@ -61,34 +62,44 @@ class SaleUpdate(ModelMutation):
     def perform_mutation(cls, _root, info: ResolveInfo, /, **data):
         promotion = cls.get_instance(info, **data)
         rules = promotion.rules.all()
-        predicate = rules[0].catalogue_predicate
+        previous_predicate = rules[0].catalogue_predicate
         previous_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
-            predicate
+            previous_predicate
         )
         previous_end_date = promotion.end_date
-        manager = get_plugin_manager_promise(info.context).get()
+        previous_products = get_products_for_rule(rules[0])
+        previous_product_ids = set(previous_products.values_list("id", flat=True))
         with traced_atomic_transaction():
             input = data.get("input")
             cls.update_fields(promotion, rules, input)
-
             cls.clean_instance(info, promotion)
             promotion.save()
             for rule in rules:
                 cls.clean_instance(info, rule)
                 rule.save()
-            # current_catalogue = fetch_catalogue_info(instance)
-            # cls.send_sale_notifications(
-            #     manager,
-            #     instance,
-            #     cleaned_input,
-            #     previous_catalogue,
-            #     current_catalogue,
-            #     previous_end_date,
-            # )
-            #
-            # cls.update_products_discounted_prices(
-            #     cleaned_input, previous_catalogue, current_catalogue
-            # )
+            current_predicate = rules[0].catalogue_predicate
+            current_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
+                current_predicate
+            )
+            manager = get_plugin_manager_promise(info.context).get()
+            cls.send_sale_notifications(
+                manager,
+                promotion,
+                input,
+                previous_catalogue,
+                current_catalogue,
+                previous_end_date,
+            )
+
+            products = get_products_for_rule(rules[0])
+            if (
+                product_ids := set(products.values_list("id", flat=True))
+                | previous_product_ids
+            ):
+                update_products_discounted_prices_for_promotion_task.delay(
+                    list(product_ids)
+                )
+
         return cls.success_response(ChannelContext(node=promotion, channel_slug=None))
 
     # TODO no date validation???
@@ -115,8 +126,8 @@ class SaleUpdate(ModelMutation):
         if type := input.get("type"):
             for rule in rules:
                 rule.reward_value_type = type
-        fields = ["collections", "categories", "products", "variants"]
-        if any([key in fields for key in input.keys()]):
+
+        if any([key in CATALOGUE_FIELDS for key in input.keys()]):
             predicate = cls.create_predicate(input)
             for rule in rules:
                 rule.catalogue_predicate = predicate
@@ -135,26 +146,25 @@ class SaleUpdate(ModelMutation):
         cls,
         manager,
         instance,
-        cleaned_input,
+        input,
         previous_catalogue,
         current_catalogue,
         previous_end_date,
     ):
-        current_catalogue = convert_catalogue_info_to_global_ids(current_catalogue)
         cls.call_event(
             manager.sale_updated,
             instance,
-            convert_catalogue_info_to_global_ids(previous_catalogue),
+            previous_catalogue,
             current_catalogue,
         )
 
         cls.send_sale_toggle_notification(
-            manager, instance, cleaned_input, current_catalogue, previous_end_date
+            manager, instance, input, current_catalogue, previous_end_date
         )
 
     @staticmethod
     def send_sale_toggle_notification(
-        manager, instance, clean_input, catalogue, previous_end_date
+        manager, instance, input, catalogue, previous_end_date
     ):
         """Send the notification about starting or ending sale if it wasn't sent yet.
 
@@ -164,9 +174,9 @@ class SaleUpdate(ModelMutation):
         """
         now = datetime.now(pytz.utc)
 
-        notification_date = instance.notification_sent_datetime
-        start_date = clean_input.get("start_date")
-        end_date = clean_input.get("end_date")
+        notification_date = instance.last_notification_scheduled_at
+        start_date = input.get("start_date")
+        end_date = input.get("end_date")
 
         if not start_date and not end_date:
             return
@@ -187,35 +197,5 @@ class SaleUpdate(ModelMutation):
 
         if send_notification:
             manager.sale_toggle(instance, catalogue)
-            instance.notification_sent_datetime = now
-            instance.save(update_fields=["notification_sent_datetime"])
-
-    @staticmethod
-    def update_products_discounted_prices(
-        cleaned_input, previous_catalogue, current_catalogue
-    ):
-        catalogues_to_recalculate = defaultdict(set)
-        for catalogue_field in CATALOGUE_FIELDS:
-            if any(
-                [
-                    field in cleaned_input
-                    for field in [
-                        catalogue_field,
-                        "start_date",
-                        "end_date",
-                        "type",
-                        "value",
-                    ]
-                ]
-            ):
-                catalogues_to_recalculate[catalogue_field] = previous_catalogue[
-                    catalogue_field
-                ].union(current_catalogue[catalogue_field])
-
-        if catalogues_to_recalculate:
-            update_products_discounted_prices_of_catalogues_task.delay(
-                product_ids=list(catalogues_to_recalculate["products"]),
-                category_ids=list(catalogues_to_recalculate["categories"]),
-                collection_ids=list(catalogues_to_recalculate["collections"]),
-                variant_ids=list(catalogues_to_recalculate["variants"]),
-            )
+            instance.last_notification_scheduled_at = now
+            instance.save(update_fields=["last_notification_scheduled_at"])
