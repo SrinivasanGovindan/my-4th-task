@@ -85,6 +85,7 @@ def _convert_sale_into_promotion(sale):
         updated_at=sale.updated_at,
         metadata=sale.metadata,
         private_metadata=sale.private_metadata,
+        last_notification_scheduled_at=sale.notification_sent_datetime,
     )
 
 
