@@ -3,9 +3,11 @@ from typing import List
 
 import graphene
 import pytz
+from django.core.exceptions import ValidationError
 
 from .....core.tracing import traced_atomic_transaction
 from .....discount import models
+from .....discount.error_codes import DiscountErrorCode
 from .....discount.sale_converter import create_catalogue_predicate
 from .....discount.utils import CATALOGUE_FIELDS
 from .....permission.enums import DiscountPermissions
@@ -18,6 +20,7 @@ from ....core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ....core.mutations import ModelMutation
 from ....core.types import DiscountError
 from ....core.utils import WebhookEventInfo
+from ....core.validators import validate_end_is_after_start
 from ....plugins.dataloaders import get_plugin_manager_promise
 from ...types import Sale
 from ...utils import (
@@ -61,6 +64,8 @@ class SaleUpdate(ModelMutation):
     @classmethod
     def perform_mutation(cls, _root, info: ResolveInfo, /, **data):
         promotion = cls.get_instance(info, **data)
+        input = data.get("input")
+        cls.validate_dates(promotion, input)
         rules = promotion.rules.all()
         previous_predicate = rules[0].catalogue_predicate
         previous_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
@@ -70,7 +75,6 @@ class SaleUpdate(ModelMutation):
         previous_products = get_products_for_rule(rules[0])
         previous_product_ids = set(previous_products.values_list("id", flat=True))
         with traced_atomic_transaction():
-            input = data.get("input")
             cls.update_fields(promotion, rules, input)
             cls.clean_instance(info, promotion)
             promotion.save()
@@ -97,6 +101,16 @@ class SaleUpdate(ModelMutation):
     def get_instance(cls, info: ResolveInfo, **data):
         object_id = cls.get_global_id_or_error(data["id"], "Sale")
         return models.Promotion.objects.get(old_sale_id=object_id)
+
+    @staticmethod
+    def validate_dates(instance, input):
+        start_date = input.get("start_date") or instance.start_date
+        end_date = input.get("end_date") or instance.end_date
+        try:
+            validate_end_is_after_start(start_date, end_date)
+        except ValidationError as error:
+            error.code = DiscountErrorCode.INVALID.value
+            raise ValidationError({"end_date": error})
 
     @classmethod
     def update_fields(

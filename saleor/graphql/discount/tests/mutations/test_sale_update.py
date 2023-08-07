@@ -6,6 +6,7 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from .....discount import DiscountValueType
+from .....discount.error_codes import DiscountErrorCode
 from .....discount.models import Promotion
 from .....discount.sale_converter import convert_sales_to_promotions
 from .....discount.utils import fetch_catalogue_info
@@ -348,6 +349,8 @@ def test_update_sale_end_date_after_current_date_notification_not_sent(
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
+    sale.start_date = timezone.now() - timedelta(days=1)
+    sale.save(update_fields=["start_date"])
     end_date = timezone.now() + timedelta(days=1)
     convert_sales_to_promotions()
 
@@ -407,7 +410,8 @@ def test_update_sale_end_date_before_current_date_notification_already_sent(
     sale.type = DiscountValueType.FIXED
     notification_sent_datetime = now - timedelta(minutes=5)
     sale.notification_sent_datetime = notification_sent_datetime
-    sale.save(update_fields=["type", "notification_sent_datetime"])
+    sale.start_date = now - timedelta(days=2)
+    sale.save(update_fields=["type", "notification_sent_datetime", "start_date"])
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
@@ -467,7 +471,8 @@ def test_update_sale_end_date_before_current_date_notification_sent(
     # Set discount value type to 'fixed' and change it in mutation
     sale.type = DiscountValueType.FIXED
     sale.notification_sent_datetime = None
-    sale.save(update_fields=["type", "notification_sent_datetime"])
+    sale.start_date = timezone.now() - timedelta(days=2)
+    sale.save(update_fields=["type", "notification_sent_datetime", "start_date"])
     previous_catalogue = convert_catalogue_info_to_global_ids(
         fetch_catalogue_info(sale)
     )
@@ -699,5 +704,45 @@ def test_update_sale_products(
     update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
 
 
-# TODO def test_update_sale_end_date_before_start_date
+@freeze_time("2020-03-18 12:00:00")
+@patch(
+    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
+)
+@patch("saleor.plugins.manager.PluginsManager.sale_updated")
+def test_update_sale_end_date_before_start_date(
+    updated_webhook_mock,
+    update_products_discounted_prices_for_promotion_task_mock,
+    staff_api_client,
+    sale,
+    permission_manage_discounts,
+):
+    # given
+    query = SALE_UPDATE_MUTATION
+
+    sale.start_date = timezone.now() + timedelta(days=1)
+    sale.save(update_fields=["start_date"])
+    end_date = timezone.now() - timedelta(days=1)
+    convert_sales_to_promotions()
+
+    variables = {
+        "id": graphene.Node.to_global_id("Sale", sale.id),
+        "input": {"endDate": end_date},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_discounts]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert not content["data"]["saleUpdate"]["sale"]
+    errors = content["data"]["saleUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "endDate"
+    assert errors[0]["code"] == DiscountErrorCode.INVALID.name
+    updated_webhook_mock.assert_not_called()
+    update_products_discounted_prices_for_promotion_task_mock.assert_not_called()
+
+
 # TODO def test_update_sale_with_none_values
