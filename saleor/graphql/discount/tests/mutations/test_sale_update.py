@@ -708,9 +708,11 @@ def test_update_sale_products(
 @patch(
     "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
 )
+@patch("saleor.plugins.manager.PluginsManager.sale_toggle")
 @patch("saleor.plugins.manager.PluginsManager.sale_updated")
 def test_update_sale_end_date_before_start_date(
     updated_webhook_mock,
+    sale_toggle_mock,
     update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     sale,
@@ -742,7 +744,62 @@ def test_update_sale_end_date_before_start_date(
     assert errors[0]["field"] == "endDate"
     assert errors[0]["code"] == DiscountErrorCode.INVALID.name
     updated_webhook_mock.assert_not_called()
+    sale_toggle_mock.assert_not_called()
     update_products_discounted_prices_for_promotion_task_mock.assert_not_called()
 
 
-# TODO def test_update_sale_with_none_values
+@freeze_time("2020-03-18 12:00:00")
+def test_update_sale_with_none_values(
+    staff_api_client,
+    sale,
+    permission_manage_discounts,
+):
+    """Ensure that non-required fields can be nullified."""
+
+    # given
+    query = SALE_UPDATE_MUTATION
+
+    sale.name = "Sale name"
+    sale.type = DiscountValueType.FIXED
+    start_date = timezone.now() + timedelta(days=1)
+    sale.start_date = start_date
+    sale.end_date = timezone.now() + timedelta(days=5)
+    sale.save(update_fields=["name", "type", "start_date", "end_date"])
+    convert_sales_to_promotions()
+
+    variables = {
+        "id": graphene.Node.to_global_id("Sale", sale.id),
+        "input": {
+            "name": None,
+            "startDate": None,
+            "endDate": None,
+            "type": None,
+            "collections": [],
+            "categories": [],
+            "products": [],
+            "variants": [],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_discounts]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert not content["data"]["saleUpdate"]["errors"]
+    data = content["data"]["saleUpdate"]["sale"]
+    assert data["type"] == DiscountValueType.FIXED.upper()
+    assert data["name"] == "Sale name"
+    assert data["startDate"] == start_date.isoformat()
+    assert not data["endDate"]
+
+    promotion = Promotion.objects.get(old_sale_id=sale.id)
+    assert promotion.start_date.isoformat() == start_date.isoformat()
+    assert promotion.start_date == start_date
+    assert not promotion.end_date
+
+    rule = promotion.rules.first()
+    assert rule.reward_value_type == DiscountValueType.FIXED
+    assert not rule.catalogue_predicate

@@ -93,10 +93,6 @@ class SaleUpdate(ModelMutation):
 
         return cls.success_response(ChannelContext(node=promotion, channel_slug=None))
 
-    # TODO no date validation???
-    # TODO what is "value" in input for???
-    # TODO check where None can be passed
-
     @classmethod
     def get_instance(cls, info: ResolveInfo, **data):
         object_id = cls.get_global_id_or_error(data["id"], "Sale")
@@ -120,7 +116,8 @@ class SaleUpdate(ModelMutation):
             promotion.name = name
         if start_date := input.get("start_date"):
             promotion.start_date = start_date
-        if end_date := input.get("end_date"):
+        if "end_date" in input.keys():
+            end_date = input.get("end_date")
             promotion.end_date = end_date
 
         # We need to make sure, that all rules have the same type and predicate

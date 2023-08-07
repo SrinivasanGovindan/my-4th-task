@@ -93,7 +93,7 @@ class Migration(migrations.Migration):
                         sanitizer=saleor.core.utils.editorjs.clean_editor_js,
                     ),
                 ),
-                ("catalogue_predicate", models.JSONField()),
+                ("catalogue_predicate", models.JSONField(blank=True)),
                 (
                     "reward_value_type",
                     models.CharField(
