@@ -166,7 +166,7 @@ class SaleUpdate(ModelMutation):
 
         if any(
             field in input.keys()
-            for field in [*CATALOGUE_FIELDS, "start_date", "end_date", "type", "value"]
+            for field in [*CATALOGUE_FIELDS, "start_date", "end_date", "type"]
         ):
             products = get_products_for_rule(rule)
             if (
