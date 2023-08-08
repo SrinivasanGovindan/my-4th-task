@@ -51,12 +51,13 @@ class SaleDelete(ModelDeleteMutation):
         object_id = cls.get_global_id_or_error(id, "Sale")
         promotion = models.Promotion.objects.get(old_sale_id=object_id)
         promotion_id = promotion.id
-        rules = promotion.rules.all()
-        previous_predicate = rules[0].catalogue_predicate
+        rule = promotion.rules.first()
+        assert rule
+        previous_predicate = rule.catalogue_predicate
         previous_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
             previous_predicate
         )
-        products = get_products_for_rule(rules[0])
+        products = get_products_for_rule(rule)
         product_ids = set(products.values_list("id", flat=True))
         with traced_atomic_transaction():
             promotion.delete()
